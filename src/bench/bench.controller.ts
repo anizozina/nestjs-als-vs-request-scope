@@ -1,7 +1,13 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Param } from '@nestjs/common';
 import { ClsService } from 'nestjs-cls';
+import * as v8 from 'v8';
 import { SingletonLoggerService } from '../services/singleton-logger.service';
 import { RequestScopeLoggerService } from '../services/request-scope-logger.service';
+import {
+  getAllEndpointStats,
+  resetAllEndpointStats,
+  resetEndpointStats,
+} from './memory-tracking.interceptor';
 
 @Controller('bench')
 export class BenchController {
@@ -13,13 +19,39 @@ export class BenchController {
   @Get('memory')
   getMemory() {
     const memUsage = process.memoryUsage();
+    const heapStats = v8.getHeapStatistics();
+    const endpointStats = getAllEndpointStats();
+
     return {
-      heapUsed: Math.round(memUsage.heapUsed / 1024 / 1024 * 100) / 100,
-      heapTotal: Math.round(memUsage.heapTotal / 1024 / 1024 * 100) / 100,
-      rss: Math.round(memUsage.rss / 1024 / 1024 * 100) / 100,
-      external: Math.round(memUsage.external / 1024 / 1024 * 100) / 100,
+      // Current memory state
+      current: {
+        heapUsed: Math.round(memUsage.heapUsed / 1024 / 1024 * 100) / 100,
+        heapTotal: Math.round(memUsage.heapTotal / 1024 / 1024 * 100) / 100,
+        rss: Math.round(memUsage.rss / 1024 / 1024 * 100) / 100,
+        external: Math.round(memUsage.external / 1024 / 1024 * 100) / 100,
+      },
+      // v8.getHeapStatistics()
+      v8: {
+        usedHeapSize: Math.round(heapStats.used_heap_size / 1024 / 1024 * 100) / 100,
+        totalHeapSize: Math.round(heapStats.total_heap_size / 1024 / 1024 * 100) / 100,
+        heapSizeLimit: Math.round(heapStats.heap_size_limit / 1024 / 1024 * 100) / 100,
+      },
+      // Per-endpoint statistics (tracked by interceptor)
+      endpoints: endpointStats,
       unit: 'MB',
     };
+  }
+
+  @Get('memory/reset')
+  resetMemoryTrackingAll() {
+    resetAllEndpointStats();
+    return { success: true, message: 'All endpoint memory stats reset' };
+  }
+
+  @Get('memory/reset/:endpoint')
+  resetMemoryTrackingEndpoint(@Param('endpoint') endpoint: string) {
+    resetEndpointStats(`/bench/${endpoint}`);
+    return { success: true, message: `Memory stats reset for /bench/${endpoint}` };
   }
 
   @Get('gc')

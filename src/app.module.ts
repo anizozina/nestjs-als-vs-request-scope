@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { APP_INTERCEPTOR } from '@nestjs/core';
 import { ClsModule } from 'nestjs-cls';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -6,6 +7,7 @@ import {
   BenchController,
   BenchRequestScopeController,
 } from './bench/bench.controller';
+import { MemoryTrackingInterceptor } from './bench/memory-tracking.interceptor';
 import { SingletonLoggerService } from './services/singleton-logger.service';
 import { RequestScopeLoggerService } from './services/request-scope-logger.service';
 
@@ -23,6 +25,14 @@ import { RequestScopeLoggerService } from './services/request-scope-logger.servi
     }),
   ],
   controllers: [AppController, BenchController, BenchRequestScopeController],
-  providers: [AppService, SingletonLoggerService, RequestScopeLoggerService],
+  providers: [
+    AppService,
+    SingletonLoggerService,
+    RequestScopeLoggerService,
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: MemoryTrackingInterceptor,
+    },
+  ],
 })
 export class AppModule {}

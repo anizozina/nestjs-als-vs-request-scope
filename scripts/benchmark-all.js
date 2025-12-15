@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 const autocannon = require('autocannon');
+const fs = require('fs');
+const path = require('path');
 
 const endpoints = [
   { name: 'Singleton', path: '/bench/singleton' },
@@ -27,6 +29,14 @@ async function getMemoryUsage() {
 async function triggerGC() {
   try {
     await fetch(`${config.url}/bench/gc`);
+  } catch {
+    // ignore
+  }
+}
+
+async function resetMemoryTracking() {
+  try {
+    await fetch(`${config.url}/bench/memory/reset`);
   } catch {
     // ignore
   }
@@ -65,15 +75,16 @@ async function main() {
 
   for (const endpoint of endpoints) {
     try {
-      // Trigger GC and get memory before benchmark
+      // Reset memory tracking for this endpoint, trigger GC, and wait for stable state
+      await resetMemoryTracking();
       await triggerGC();
       await new Promise((resolve) => setTimeout(resolve, 1000));
-      const memBefore = await getMemoryUsage();
 
       const result = await runBenchmark(endpoint);
 
-      // Get memory after benchmark (before GC)
+      // Get memory stats after benchmark (includes per-endpoint peak and avg)
       const memAfter = await getMemoryUsage();
+      const endpointStats = memAfter?.endpoints?.[endpoint.path] ?? null;
 
       results.push({
         name: endpoint.name,
@@ -87,9 +98,10 @@ async function main() {
         },
         throughput: result.throughput.average,
         memory: {
-          before: memBefore,
-          after: memAfter,
-          heapDelta: memAfter && memBefore ? (memAfter.heapUsed - memBefore.heapUsed).toFixed(2) : null,
+          peak: endpointStats?.peak ?? null,
+          avg: endpointStats?.avg ?? null,
+          sampleCount: endpointStats?.sampleCount ?? null,
+          v8UsedHeapSize: memAfter?.v8?.usedHeapSize ?? null,
         },
       });
 
@@ -112,13 +124,15 @@ async function main() {
     console.log(`  Latency (p97.5): ${result.latency.p95.toFixed(2)}ms`);
     console.log(`  Latency (p99): ${result.latency.p99.toFixed(2)}ms`);
     console.log(`  Avg Throughput: ${(result.throughput / 1024 / 1024).toFixed(2)} MB/s`);
-    if (result.memory.after) {
-      console.log(`  Memory (heap used): ${result.memory.after.heapUsed} MB`);
-      console.log(`  Memory (heap delta): ${result.memory.heapDelta} MB`);
+    if (result.memory.peak) {
+      console.log(`  Memory (peak): ${result.memory.peak} MB`);
+      console.log(`  Memory (avg): ${result.memory.avg} MB`);
+      console.log(`  Memory (samples): ${result.memory.sampleCount}`);
     }
   });
 
   // Calculate performance comparison
+  const comparison = {};
   if (results.length >= 2) {
     const baseline = results[0]; // Singleton
     console.log('\n' + '='.repeat(60));
@@ -128,10 +142,32 @@ async function main() {
     results.slice(1).forEach((result) => {
       const rpsRatio = ((result.rps / baseline.rps) * 100).toFixed(2);
       const latencyRatio = ((result.latency.mean / baseline.latency.mean) * 100).toFixed(2);
+      const memoryPeakRatio = result.memory.peak && baseline.memory.peak
+        ? ((result.memory.peak / baseline.memory.peak) * 100).toFixed(2)
+        : null;
+      const memoryAvgRatio = result.memory.avg && baseline.memory.avg
+        ? ((result.memory.avg / baseline.memory.avg) * 100).toFixed(2)
+        : null;
+
+      comparison[result.name] = {
+        rpsRatio: parseFloat(rpsRatio),
+        latencyRatio: parseFloat(latencyRatio),
+        memoryPeakRatio: memoryPeakRatio ? parseFloat(memoryPeakRatio) : null,
+        memoryAvgRatio: memoryAvgRatio ? parseFloat(memoryAvgRatio) : null,
+        degradation: result.rps < baseline.rps
+          ? parseFloat((((baseline.rps - result.rps) / baseline.rps) * 100).toFixed(2))
+          : 0,
+      };
 
       console.log(`\n${result.name}:`);
       console.log(`  RPS: ${rpsRatio}% of baseline`);
       console.log(`  Latency: ${latencyRatio}% of baseline`);
+      if (memoryPeakRatio) {
+        console.log(`  Memory (peak): ${memoryPeakRatio}% of baseline`);
+      }
+      if (memoryAvgRatio) {
+        console.log(`  Memory (avg): ${memoryAvgRatio}% of baseline`);
+      }
 
       if (result.rps < baseline.rps) {
         const degradation = (((baseline.rps - result.rps) / baseline.rps) * 100).toFixed(2);
@@ -139,6 +175,40 @@ async function main() {
       }
     });
   }
+
+  // Save results to JSON file
+  const reportDir = './reports';
+  if (!fs.existsSync(reportDir)) {
+    fs.mkdirSync(reportDir, { recursive: true });
+  }
+
+  const report = {
+    timestamp: new Date().toISOString(),
+    config: {
+      connections: config.connections,
+      duration: config.duration,
+    },
+    results: results.map((r) => ({
+      name: r.name,
+      path: r.path,
+      rps: parseFloat(r.rps.toFixed(2)),
+      latency: {
+        mean: parseFloat(r.latency.mean.toFixed(2)),
+        p95: parseFloat(r.latency.p95.toFixed(2)),
+        p99: parseFloat(r.latency.p99.toFixed(2)),
+      },
+      memory: {
+        peak: r.memory.peak ?? null,
+        avg: r.memory.avg ?? null,
+        sampleCount: r.memory.sampleCount ?? null,
+      },
+    })),
+    comparison,
+  };
+
+  const reportPath = path.join(reportDir, 'benchmark-results.json');
+  fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
+  console.log(`\nResults saved to: ${reportPath}`);
 
   console.log('\n');
 }

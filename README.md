@@ -18,75 +18,118 @@ NestJSにおける Request Scope と Async Local Storage を比較するやー�
 ### 準備
 
 ```bash
-pnpm install
 docker-compose build
 ```
 
-### 起動
+### 計測の実行
 
 ```bash
+# コンテナを起動
 docker-compose up -d
-```
 
-http://localhost:3000 で起動するはず
-
-### ベンチマーク実行
-
-```bash
+# ベンチマーク実行（RPS、レイテンシ、メモリを計測）
 docker-compose exec app pnpm run benchmark:all
-```
 
-30秒間、100コネクションで負荷をかけてRPSを計測する。
-
-### プロファイリング実行
-
-Node.js組み込みプロファイラ（`--prof`）でCPU使用率を分析する。
-
-```bash
-# 全エンドポイントを一括プロファイル（所要時間: 約90秒）
+# プロファイリング実行（CPU負荷の内訳を分析）
 docker-compose run --rm app pnpm run profile:all
-
-# または個別に実行
-docker-compose run --rm app pnpm run profile:singleton
-docker-compose run --rm app pnpm run profile:request-scope
-docker-compose run --rm app pnpm run profile:cls
 ```
 
-レポートは `reports/` ディレクトリに生成される
+### 計測結果の出力先
 
-```bash
-cat reports/singleton-profile.txt | head -100
-cat reports/request-scope-profile.txt | head -100
-cat reports/cls-profile.txt | head -100
+計測結果は `reports/` ディレクトリに出力される：
+
+| ファイル | 内容 |
+|----------|------|
+| `benchmark-results.json` | RPS、レイテンシ、メモリ使用量 |
+| `singleton-profile.txt` | Singleton の CPU プロファイル |
+| `request-scope-profile.txt` | Request Scope の CPU プロファイル |
+| `cls-profile.txt` | CLS の CPU プロファイル |
+
+### AIに分析させる
+
+計測結果をAIに読み込ませてサマリを生成できる。以下のプロンプトを使用：
+
+```md
+あなたはNode.jsパフォーマンスチューニングの専門家です。
+
+## タスク
+`reports/` ディレクトリにある計測結果を分析し、サマリを作成してください。
+
+## 読み込むファイル
+- `benchmark-results.json` - RPS、レイテンシ、メモリ使用量
+- `singleton-profile.txt` - Singleton の CPU プロファイル
+- `request-scope-profile.txt` - Request Scope の CPU プロファイル（大きい場合は先頭150行）
+- `cls-profile.txt` - CLS の CPU プロファイル
+
+## 出力形式
+
+### 1. サマリ（5行以内）
+- 3パターンのパフォーマンス順位
+- Request Scopeが遅い理由を一言で
+- おすすめのパターン
+
+### 2. 比較表
+| パターン | RPS | Latency | Memory | 備考 |
+※ Singletonを基準(100%)として相対値を表示
+
+### 3. Request Scopeが遅い原因（簡潔に）
+benchmark-results.jsonの数値と、プロファイルで見つかった
+Request Scope固有の関数を根拠として説明。
 ```
 
 ## 実測結果
 
-### パフォーマンス比較
+---
 
-| エンドポイント | Req/s | 対 Singleton | レイテンシ (avg) | レイテンシ (p99) |
-|--------------|-------|-------------|----------------|----------------|
-| **Singleton** | 11,116 | 100% (baseline) | 8.5ms | 47ms |
-| **Request Scope** | 7,694 | **69.2%** (-30.8%) | 12.5ms | 51ms |
-| **CLS** | 10,439 | **93.9%** (-6.1%) | 9.1ms | 48ms |
+# NestJS ALS vs Request Scope ベンチマーク分析サマリ
 
-**結論**: Request Scopeは約30%のパフォーマンス劣化が発生するが、CLSは約6%の劣化に抑えられる
+## 1. サマリ（5行以内）
 
-### プロファイル分析
+- **パフォーマンス順位**: Singleton > CLS (nestjs-cls) > Request Scope
+- **Request Scopeが遅い理由**: リクエスト毎にDI（依存性注入）とクラスのインスタンス生成が発生
+- **おすすめ**: **CLS (nestjs-cls)** - Singleton同等の高速性を維持しつつ、リクエストスコープのデータ共有が可能
 
-**Request Scope 固有のオーバーヘッド**（CPU プロファイルに出現）:
+---
 
-- `OrdinaryGetMetadata` (2.6%) - リフレクションメタデータ取得
-- `resolveConstructorParams` (1.1%) - DIコンストラクタ解決
-- `resolveProperties` (1.0%) - プロパティインジェクション
-- `loadInstance` (1.0%) - インスタンス生成
-- `createContext` (1.0%) - リクエストコンテキスト作成
+## 2. 比較表
 
-これらの関数は **Singleton と CLS には出現せず**、リクエスト毎のDI処理によるオーバーヘッドがパフォーマンス劣化の直接的な原因となっている。
+| パターン | RPS | Latency (mean) | Memory (avg) | 備考 |
+|----------|-----|----------------|--------------|------|
+| **Singleton** | 4,639 (100%) | 21.12ms (100%) | 19.89MB (100%) | ベースライン |
+| **CLS (nestjs-cls)** | 4,253 (92%) | 23.08ms (109%) | 20.50MB (103%) | AsyncLocalStorage使用、軽量なオーバーヘッド |
+| **Request Scope** | 3,718 (80%) | 26.42ms (125%) | 20.83MB (105%) | DI再構築コストが顕著 |
 
-## 技術スタック
+**ポイント**:
+- Request ScopeはSingletonと比べて **RPS 約20%低下**、レイテンシ **約25%増加**
+- CLSはSingletonと比べて **RPS 約8%低下** のみで、実用上許容範囲
 
-- NestJS 11 (Fastify adapter)
-- nestjs-cls (Async Local Storage)
-- autocannon (負荷テスト)
-- Node.js --prof (CPUプロファイラ)
+---
+
+## 3. Request Scopeが遅い原因（簡潔に）
+
+### 数値的根拠（benchmark-results.jsonより）
+- RPS: 3,718 vs Singleton 4,639 → **約20%の性能劣化**
+- レイテンシ: 26.42ms vs 21.12ms → **5.3ms増加**
+
+### プロファイルで発見されたRequest Scope固有の関数
+
+Request Scopeプロファイルにのみ頻出する、**Injector（DI）関連の関数**:
+
+| 関数 | ticks | 説明 |
+|------|-------|------|
+| `loadInstance` (injector.js) | 27 | インスタンス生成 |
+| `resolveProperties` (injector.js) | 24 | プロパティ解決 |
+| `instantiateClass` (injector.js) | 24 | クラスのnew |
+| `resolveConstructorParams` (injector.js) | 21 | コンストラクタ引数解決 |
+| `loadCtorMetadata` (injector.js) | 19 | メタデータ読み込み |
+| `createContext` (context-creator.js) | 35 | コンテキスト生成 |
+| `OrdinaryGetMetadata` (reflect-metadata) | 59 (2.0%) | リフレクション処理 |
+| `getByRequest` (context-id-factory.js) | 12 | リクエストID取得 |
+| `getInstanceByContextId` (instance-wrapper.js) | 11 | コンテキスト別インスタンス管理 |
+
+**結論**: Request Scopeでは、リクエストごとに以下の処理が繰り返される：
+1. **クラスのインスタンス化** (`instantiateClass`, `loadInstance`)
+2. **依存関係の解決** (`resolveConstructorParams`, `resolveProperties`)
+3. **メタデータのリフレクション** (`OrdinaryGetMetadata`, `loadCtorMetadata`)
+
+Singletonではこれらが起動時に1回だけ実行されるため、Request Scopeと比較して大幅に高速です。CLSはSingletonインスタンスを維持しつつAsyncLocalStorageでリクエストデータを管理するため、DIオーバーヘッドなく高速に動作します。
