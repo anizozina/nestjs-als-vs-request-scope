@@ -1,9 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { ClsService } from 'nestjs-cls';
+import { load } from '../util/load';
 
 /**
  * CLS (Continuation Local Storage) を使用したロガーサービス
- * 
+ *
  * ポイント：
  * - Singletonスコープ（デフォルト）なのでDI再構築コストがない
  * - でもリクエストごとに異なるRequest IDにアクセスできる
@@ -27,11 +28,9 @@ export class ClsLoggerService {
       counter: this.counter,
       scope: 'CLS',
     };
-
-    // Simulate minimal computation (avoid I/O)
-    for (let i = 0; i < 100; i++) {
-      Math.sqrt(i);
-    }
+    
+    // ちょっとだけCPUに負荷をかける
+    load();
 
     return result;
   }

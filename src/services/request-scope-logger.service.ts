@@ -1,5 +1,6 @@
 import { Inject, Injectable, Scope } from '@nestjs/common';
 import { REQUEST } from '@nestjs/core';
+import { load } from '../util/load';
 
 interface RequestWithHeaders {
   headers: Record<string, string | string[] | undefined>;
@@ -35,10 +36,9 @@ export class RequestScopeLoggerService {
       scope: 'REQUEST',
     };
 
-    // Simulate minimal computation (avoid I/O)
-    for (let i = 0; i < 100; i++) {
-      Math.sqrt(i);
-    }
+    
+    // ちょっとだけCPUに負荷をかける
+    load();
 
     return result;
   }

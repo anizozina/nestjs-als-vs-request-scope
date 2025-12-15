@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { load } from '../util/load';
 
 /**
  * Singleton スコープのロガーサービス
@@ -27,10 +28,9 @@ export class SingletonLoggerService {
       scope: 'SINGLETON',
     };
 
-    // Simulate minimal computation (avoid I/O)
-    for (let i = 0; i < 100; i++) {
-      Math.sqrt(i);
-    }
+    
+    // ちょっとだけCPUに負荷をかける
+    load();
 
     return result;
   }
