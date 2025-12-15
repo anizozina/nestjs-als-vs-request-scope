@@ -1,15 +1,35 @@
-import { Injectable, Scope } from '@nestjs/common';
+import { Inject, Injectable, Scope } from '@nestjs/common';
+import { REQUEST } from '@nestjs/core';
 
+interface RequestWithHeaders {
+  headers: Record<string, string | string[] | undefined>;
+}
+
+/**
+ * Request Scope を使用したロガーサービス
+ * 
+ * ポイント：
+ * - リクエストごとにインスタンスが新規作成される
+ * - Request IDをインスタンス変数として保持できる
+ * - ただしDI再構築コストが毎リクエスト発生する
+ */
 @Injectable({ scope: Scope.REQUEST })
 export class RequestScopeLoggerService {
   private counter = 0;
+  private readonly requestId: string;
 
-  processRequest(requestId: string): object {
+  constructor(@Inject(REQUEST) request: RequestWithHeaders) {
+    // リクエストからIDを取得してインスタンスに保持
+    this.requestId =
+      (request.headers['x-request-id'] as string) ||
+      `req-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+  }
+
+  processRequest(): object {
     this.counter++;
 
-    // Simulate some lightweight processing
     const result = {
-      requestId,
+      requestId: this.requestId,
       timestamp: Date.now(),
       counter: this.counter,
       scope: 'REQUEST',
@@ -21,6 +41,10 @@ export class RequestScopeLoggerService {
     }
 
     return result;
+  }
+
+  getRequestId(): string {
+    return this.requestId;
   }
 
   getCounter(): number {

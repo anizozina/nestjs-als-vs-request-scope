@@ -8,6 +8,7 @@ import {
 import { MemoryTrackingInterceptor } from './bench/memory-tracking.interceptor';
 import { SingletonLoggerService } from './services/singleton-logger.service';
 import { RequestScopeLoggerService } from './services/request-scope-logger.service';
+import { ClsLoggerService } from './services/cls-logger.service';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { RequestScopeLoggerService } from './services/request-scope-logger.servi
   providers: [
     SingletonLoggerService,
     RequestScopeLoggerService,
+    ClsLoggerService,
     {
       provide: APP_INTERCEPTOR,
       useClass: MemoryTrackingInterceptor,
