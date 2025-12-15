@@ -10,6 +10,27 @@ export class BenchController {
     private readonly cls: ClsService,
   ) {}
 
+  @Get('memory')
+  getMemory() {
+    const memUsage = process.memoryUsage();
+    return {
+      heapUsed: Math.round(memUsage.heapUsed / 1024 / 1024 * 100) / 100,
+      heapTotal: Math.round(memUsage.heapTotal / 1024 / 1024 * 100) / 100,
+      rss: Math.round(memUsage.rss / 1024 / 1024 * 100) / 100,
+      external: Math.round(memUsage.external / 1024 / 1024 * 100) / 100,
+      unit: 'MB',
+    };
+  }
+
+  @Get('gc')
+  forceGC() {
+    if (global.gc) {
+      global.gc();
+      return { success: true, message: 'GC triggered' };
+    }
+    return { success: false, message: 'GC not exposed. Run node with --expose-gc' };
+  }
+
   @Get('singleton')
   getSingleton() {
     const requestId = `req-${Date.now()}-${Math.random()}`;

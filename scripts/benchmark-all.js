@@ -15,6 +15,23 @@ const config = {
   pipelining: 1,
 };
 
+async function getMemoryUsage() {
+  try {
+    const res = await fetch(`${config.url}/bench/memory`);
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+async function triggerGC() {
+  try {
+    await fetch(`${config.url}/bench/gc`);
+  } catch {
+    // ignore
+  }
+}
+
 async function runBenchmark(endpoint) {
   console.log(`\n${'='.repeat(60)}`);
   console.log(`Benchmarking: ${endpoint.name}`);
@@ -48,7 +65,16 @@ async function main() {
 
   for (const endpoint of endpoints) {
     try {
+      // Trigger GC and get memory before benchmark
+      await triggerGC();
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      const memBefore = await getMemoryUsage();
+
       const result = await runBenchmark(endpoint);
+
+      // Get memory after benchmark (before GC)
+      const memAfter = await getMemoryUsage();
+
       results.push({
         name: endpoint.name,
         path: endpoint.path,
@@ -60,6 +86,11 @@ async function main() {
           p99: result.latency.p99,
         },
         throughput: result.throughput.average,
+        memory: {
+          before: memBefore,
+          after: memAfter,
+          heapDelta: memAfter && memBefore ? (memAfter.heapUsed - memBefore.heapUsed).toFixed(2) : null,
+        },
       });
 
       // Wait a bit between benchmarks
@@ -81,6 +112,10 @@ async function main() {
     console.log(`  Latency (p97.5): ${result.latency.p95.toFixed(2)}ms`);
     console.log(`  Latency (p99): ${result.latency.p99.toFixed(2)}ms`);
     console.log(`  Avg Throughput: ${(result.throughput / 1024 / 1024).toFixed(2)} MB/s`);
+    if (result.memory.after) {
+      console.log(`  Memory (heap used): ${result.memory.after.heapUsed} MB`);
+      console.log(`  Memory (heap delta): ${result.memory.heapDelta} MB`);
+    }
   });
 
   // Calculate performance comparison

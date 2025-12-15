@@ -41,5 +41,5 @@ RUN mkdir -p /app/reports
 # Expose port
 EXPOSE 3000
 
-# Default command
-CMD ["node", "dist/main"]
+# Default command (--expose-gc enables manual GC for memory benchmarking)
+CMD ["node", "--expose-gc", "dist/main"]
