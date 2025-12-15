@@ -1,8 +1,6 @@
 import { Module } from '@nestjs/common';
 import { APP_INTERCEPTOR } from '@nestjs/core';
 import { ClsModule } from 'nestjs-cls';
-import { AppController } from './app.controller';
-import { AppService } from './app.service';
 import {
   BenchController,
   BenchRequestScopeController,
@@ -24,9 +22,8 @@ import { RequestScopeLoggerService } from './services/request-scope-logger.servi
       },
     }),
   ],
-  controllers: [AppController, BenchController, BenchRequestScopeController],
+  controllers: [BenchController, BenchRequestScopeController],
   providers: [
-    AppService,
     SingletonLoggerService,
     RequestScopeLoggerService,
     {
