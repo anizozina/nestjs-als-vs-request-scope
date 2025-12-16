@@ -74,18 +74,29 @@ export class ClsLoggerService {
 docker-compose build
 ```
 
-### 計測の実行
+### 計測の実行（Dockerコンテナ内で行う）
 
 ```bash
-# コンテナを起動
+# コンテナを起動（Nodeは --expose-gc で立ち上がる）
 docker-compose up -d
 
-# ベンチマーク実行（RPS、レイテンシ、メモリを計測）
+# ベンチマーク実行（RPS/レイテンシ + cgroup CPU/メモリを取得）
 docker-compose exec app pnpm run benchmark:all
 
 # プロファイリング実行（CPU負荷の内訳を分析）
 docker-compose run --rm app pnpm run profile:all
 ```
+
+計測フロー（benchmark:all 内部）
+- 各エンドポイントごとに 5s/20conn のウォームアップを実施（計測外）
+- ウォームアップ後にメモリ統計をリセットし、GC を1回呼び出し
+- 本計測: 30s / 100 connections / pipelining 1（autocannon）
+- 計測中は cgroup から CPU 使用率とメモリ（avg/peak）をサンプリングし JSON に保存
+- 追加でアプリ側のメモリトラッキング（/bench/memory）も従来どおり取得
+
+メモ
+- Docker の cgroup v2 を優先し、v1 もフォールバックで読み取ります。
+- Node をローカルで直接動かす場合は `node --expose-gc dist/main` などで GC を有効にしてください（GC が無効だと初期化 GC だけスキップされます）。
 
 ### 計測結果の出力先
 
@@ -98,18 +109,29 @@ docker-compose run --rm app pnpm run profile:all
 | `request-scope-profile.txt` | Request Scope の CPU プロファイル |
 | `cls-profile.txt` | CLS の CPU プロファイル |
 
+`benchmark-results.json` の主な項目
+- `results[].rps`, `results[].latency.mean/p95/p99`
+- `results[].cgroup.memAvgMb`, `results[].cgroup.memPeakMb`（コンテナ視点の平均/ピーク）
+- `results[].cgroup.cpuAvgPercent`, `results[].cgroup.cpuLimit`（コンテナ割当CPUに対する平均使用率）
+- `results[].memory.peak/avg/sampleCount`（アプリ内メモリトラッキング: /bench/memory ベース）
+
 ### AIに分析させる
 
-計測結果をAIに読み込ませてサマリを生成できる。以下のプロンプトを使用：
+計測結果をAIに読み込ませてサマリを生成できる。以下のプロンプトを使用（cgroupベースのCPU/メモリを優先して分析させる）：
 
 ```md
 あなたはNode.jsパフォーマンスチューニングの専門家です。
 
 ## タスク
 `reports/` ディレクトリにある計測結果を分析し、サマリを作成してください。
+RPS/レイテンシに加え、cgroupベースの CPU 使用率 と メモリ (avg/peak) を重視してください。
 
 ## 読み込むファイル
-- `benchmark-results.json` - RPS、レイテンシ、メモリ使用量
+- `benchmark-results.json`
+  - `results[].rps`, `results[].latency.*`
+  - `results[].cgroup.cpuAvgPercent`, `results[].cgroup.cpuLimit`
+  - `results[].cgroup.memAvgMb`, `results[].cgroup.memPeakMb`
+  - （参考）`results[].memory.*` はアプリ内メモリトラッキング
 - `singleton-profile.txt` - Singleton の CPU プロファイル
 - `request-scope-profile.txt` - Request Scope の CPU プロファイル（大きい場合は先頭150行）
 - `cls-profile.txt` - CLS の CPU プロファイル
@@ -119,14 +141,14 @@ docker-compose run --rm app pnpm run profile:all
 ### 1. サマリ（5行以内）
 - 3パターンのパフォーマンス順位
 - Request Scopeが遅い理由を一言で
-- おすすめのパターン
+- おすすめのパターン（CPU/メモリとRPSを総合判断）
 
 ### 2. 比較表
-| パターン | RPS | Latency | Memory | 備考 |
-※ Singletonを基準(100%)として相対値を表示
+| パターン | RPS | Latency | CPU(avg%) | Memory(peak) | 備考 |
+※ Singletonを基準(100%)として相対値を表示。Memoryは cgroup の peak を優先。
 
 ### 3. Request Scopeが遅い原因（簡潔に）
-benchmark-results.jsonの数値と、プロファイルで見つかった
+benchmark-results.json の RPS/Latency/CPU/Memory の差と、プロファイルで見つかった
 Request Scope固有の関数を根拠として説明。
 ```
 
@@ -134,51 +156,33 @@ Request Scope固有の関数を根拠として説明。
 
 ---
 
-## 1. サマリ（5行以内）
+### サマリ（5行以内）
+- パフォーマンス順位: CLS > Singleton > Request Scope（RPS/レイテンシ総合）
+- Request Scopeが遅い理由: リクエストごとのDI解決・リフレクション/async_hooks処理が多く、実行時間を消費
+- 推奨: CLS（RPS最高、レイテンシ最良、CPU同等、メモリavgも最小）
+- CPUはいずれも1 vCPUを張り付き（約100%）でスループット差はオーバーヘッド差
+- メモリpeakは全パターン同値（cgroup上限 236MB）；avgはCLSが最小
 
-1. **パフォーマンス順位**: CLS > Singleton > Request Scope（CLSが最速）
-2. **Request Scopeが遅い理由**: 毎リクエストでDIコンテナがインスタンス生成＋依存解決を行うオーバーヘッド
-3. **おすすめ**: **CLS（nestjs-cls）** — Singletonより高速かつリクエストコンテキストを安全に扱える
-4. CLSはAsyncLocalStorageベースで、インスタンス再生成なしにリクエスト固有データを保持
-5. Request Scopeは33%のRPS低下があり、本番環境では避けるべき
+### 比較表（Singleton=100%基準, 括弧内は絶対値）
 
----
+| パターン | RPS | Latency | CPU(avg%) | Memory(peak) | 備考 |
+| --- | --- | --- | --- | --- | --- |
+| Singleton | 100% (5661/s) | 100% (17.21ms) | 100% (99.9%) | 100% (236MB) | ベースライン |
+| Request Scope | 77.6% (4395/s) | 129.6% (22.31ms) | 100.1% (100.0%) | 100% (236MB) | memAvg 88.5% (172MB) と低いがRPS低下 |
+| CLS | 105.1% (5951/s) | 94.8% (16.32ms) | 100.0% (99.9%) | 100% (236MB) | memAvg 78.0% (152MB) と最小 |
 
-## 2. 比較表
+### Request Scopeが遅い原因（簡潔に）
 
-| パターン | RPS | Latency (mean) | Memory (peak) | 備考 |
-|----------|-----|----------------|---------------|------|
-| **Singleton** | 5,384 (100%) | 18.19ms (100%) | 26.13MB (100%) | ベースライン |
-| **Request Scope** | 3,611 (67.1%) | 27.36ms (150.4%) | 26.63MB (101.9%) | ❌ 33%性能低下 |
-| **CLS (nestjs-cls)** | 5,696 (105.8%) | 17.07ms (93.8%) | 27.27MB (104.4%) | ✅ 最速 |
+- 指標差: RPSが-22%（77.6%）、平均レイテンシ+30%（129.6%）、CPUは同程度（~100%）なのでオーバーヘッド由来。メモリpeakは同じ（cgroup上限）でボトルネックではない。
+- プロファイル根拠: Request Scopeのみで依存解決・リフレクション/インジェクタ関連のスタックが上位に多数出現（例: `injector.js`の`loadInstance`/`resolveConstructorParams`/`loadPerContext`や`instance-wrapper.js`の`getByRequest`など）でCPUを占有している。
 
----
+```28:55:reports/request-scope-profile.txt
+28:     28    0.2%    0.9%  JS: *createContext /app/.../helpers/context-creator.js:6:18
+32:     25    0.1%    0.8%  JS: *loadInstance /app/.../injector.js:42:23
+50:     16    0.1%    0.5%  JS: *resolveConstructorParams /app/.../injector.js:113:35
+51:     16    0.1%    0.5%  JS: *loadPerContext /app/.../injector.js:431:25
+84:     11    0.1%    0.4%  JS: *getByRequest /app/.../context-id-factory.js:29:24
+101:      9    0.1%    0.3%  JS: *RequestScopeLoggerService /app/dist/services/request-scope-logger.service.js:22:16
+```  
 
-## 3. Request Scopeが遅い原因（簡潔に）
-
-### 数値的根拠
-- RPS: 3,611 vs Singleton 5,384 → **33%低下**
-- Latency: 27.36ms vs Singleton 18.19ms → **50%増加**
-
-### プロファイルで見つかったRequest Scope固有の関数
-Request Scopeプロファイルに特有の関数群（Singleton/CLSには存在しない）:
-
-| 関数名 | CPU時間 | 説明 |
-|--------|---------|------|
-| `loadInstance` | 0.7% | DIコンテナがインスタンス生成 |
-| `loadCtorMetadata` | 0.7% | コンストラクタメタデータ読込 |
-| `resolveConstructorParams` | 0.7% | 依存関係の解決 |
-| `instantiateClass` | 0.6% | クラスのインスタンス化 |
-| `OrdinaryGetMetadata` | 1.4% | reflect-metadataでデコレータ情報取得 |
-| `resolveProperties` | 0.5% | プロパティ注入の解決 |
-| `cloneStaticInstance` | 0.3% | 静的インスタンスのクローン |
-| `RequestScopeLoggerService` | 0.3% | サービスのコンストラクタ実行 |
-
-### 根本原因
-Request Scopeは**毎リクエスト**で以下を実行:
-1. Controller/Serviceのインスタンス生成
-2. 全依存関係のreflect-metadataを読み取り
-3. コンストラクタインジェクションの解決
-4. インスタンスのライフサイクル管理
-
-一方、CLSはAsyncLocalStorage（Node.js標準API）を使用し、**インスタンスは再利用**しつつリクエストコンテキストのみを分離するため、DIオーバーヘッドがゼロ。
+- 対照: Singleton/CLSではこれらDI関連のヒットが少なく、代わりに通常のリクエスト処理・async_hooksが中心。CLSはスコープを再利用するため、DI生成コストを抑えたままRPS/レイテンシを改善。
